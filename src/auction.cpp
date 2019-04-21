@@ -11,6 +11,9 @@
 #include <graphenelib/types.h>
 
 
+#define WAITTIME 200
+#define MAXINTERVAL 3600
+
 using namespace graphene;
 
 class auction : public contract{
@@ -116,11 +119,16 @@ class auction : public contract{
         uint64_t sender = get_trx_sender();
         auto test = personlists.find(sender);
         graphene_assert(test != personlists.end(), "Please register first.\n");
-        uint64_t owner;
         auto priiter = priiterms.find(itermid);
         auto pubiter = pubiterms.find(itermid);
-        graphene_assert(pubiter->status == 1, "This iterm is not avaliable to sell now!\n");
+        auto now = get_head_block_time();
+        int64_t wait_time = WAITTIME;
+        graphene_assert(now > pubiter->receive_time + wait_time, "This iterm is not avaliable to sell now!\n");
+        
         priiterms.modify(priiter, 0, [&](auto &o){
+            for(auto iter = o.all_buyers.begin(); iter != o.all_buyers.end(); iter++){
+                graphene_assert(iter->buyerid != sender, "Repeated operation.\n");
+            }
             o.all_buyers.push_back({sender, 0, 0});
         });
     }
@@ -134,7 +142,7 @@ class auction : public contract{
         auto priiter = priiterms.find(itermid);
         auto pubiter = pubiterms.find(itermid);
         auto now1 = get_head_block_time();
-        int64_t wait_time = 100;
+        int64_t wait_time = WAITTIME;
         graphene_assert(now1 > pubiter->receive_time + wait_time, "This item does not accept new price requests now.\n");
         uint64_t min_deposit = amount * 100000 * 0.1 * (100 - test->credit )/100;
         uint64_t deposit = get_action_asset_amount();
@@ -142,7 +150,12 @@ class auction : public contract{
         graphene_assert(priiter->owner.min_price < amount * 100000, "Every new price must be greater than minmum price.\n");
         graphene_assert(pubiter->final_price < amount * 100000, "Every new price must be greater than the new price raised last time.\n");
         int64_t now = get_head_block_time();
-        int64_t max_interval = 3600;
+        int64_t max_interval = MAXINTERVAL;
+        if(now > pubiter->last_pushtime + max_interval){
+            pubiterms.modify(pubiter, 0 , [&](auto &o){
+                o.status = 2;
+            });
+        }
         graphene_assert(now < pubiter->last_pushtime + max_interval, "Auction ended.\n");
         uint64_t flag = 0;
         uint64_t last_pusher = priiter->last_pusher;
@@ -179,8 +192,8 @@ class auction : public contract{
         auto pubiter = pubiterms.find(itermid);
         auto priiter = priiterms.find(itermid);
         auto now = get_head_block_time();
-        int64_t max_interval = 100;
-        graphene_assert(pubiter->status == 3, "Please wait buyer submitting money.\n");
+        int64_t max_interval = MAXINTERVAL;
+        graphene_assert(pubiter->status == 3, "Please wait buyer submitting money or Repeated Operation.\n");
         graphene_assert(now > pubiter->last_pushtime + max_interval, "It's not proper time to submit good.\n");
         graphene_assert(sender == priiter->owner.sellerid, "Authorization failed.\n");
         pubiterms.modify(pubiter, 0, [&](auto &o){
@@ -210,7 +223,12 @@ class auction : public contract{
         auto priiter = priiterms.find(itermid);
         uint64_t payment = get_action_asset_amount();
         graphene_assert(sender == priiter->buyer, "Authorization Failed.\n");
+        graphene_assert(pubiter->final_price != 0, "No one buy it.\n");
         graphene_assert(payment == pubiter->final_price, "Not enough money.\n");
+        graphene_assert(pubiter->status < 3, "Repeated Operation.\n");
+        auto now = get_head_block_time();
+        int64_t max_interval = MAXINTERVAL;
+        graphene_assert(now > pubiter->last_pushtime + max_interval, "It is not the proper time to submit payment.\n");
         pubiterms.modify(pubiter, 0, [&](auto &o){
             o.status = 3;
         });
@@ -237,6 +255,7 @@ class auction : public contract{
         graphene_assert(test != personlists.end(), "Please register first.\n");
         auto pubiter = pubiterms.find(itermid);
         auto priiter = priiterms.find(itermid);
+        graphene_assert(pubiter->final_price != 0, "No one buy it.\n");
         graphene_assert(sender == priiter->owner.sellerid, "You are not allowed to withdraw.\n");
         graphene_assert(pubiter->status == 4, "You have already withdrawn the money.\n");
         uint64_t total_payment = pubiter->final_price * 0.9 + priiter->owner.deposit;
